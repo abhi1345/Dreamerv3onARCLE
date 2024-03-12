@@ -12,7 +12,7 @@
 #   --logdir "./logdir/dmc_walker_walk"
 #
 # 3. See results:
-# tensorboard --logdir ~/logdir
+# tensorboard    --logdir ~/logdir
 
 # System
 FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
@@ -56,3 +56,5 @@ RUN pip3 install memory_maze==1.0.3
 # minecraft setup
 RUN pip3 install minerl==0.4.4
 RUN pip3 install numpy==1.21.0
+
+RUN pip3 install arcle

@@ -12,7 +12,7 @@ class TimeLimit(gym.Wrapper):
 
     def step(self, action):
         assert self._step is not None, "Must reset environment."
-        obs, reward, done, info = self.env.step(action)
+        obs, reward, done, truncated, info = self.env.step(action)
         self._step += 1
         if self._step >= self._duration:
             done = True
@@ -71,6 +71,27 @@ class OneHotAction(gym.Wrapper):
         reference = np.zeros(actions, dtype=np.float32)
         reference[index] = 1.0
         return reference
+
+# class DictAction(gym.Wrapper):
+#     def __init__(self, env):
+#         super().__init__(env)
+#         self._random = np.random.RandomState()
+    
+#     def step(self, action):
+#         index = np.argmax(action['operation']).astype(int)
+#         reference = np.zeros_like(action['operation'])
+#         reference[index] = 1
+        
+#         return 
+#     def reset(self):
+#         return self.env.reset()
+    
+#     def _sample_action(self):
+#         actions = self.env.action_space.n
+#         index = self._random.randint(0, actions['operation'])
+#         reference = np.zeros(actions['operation'], dtype=np.float32)
+#         reference[index] = 1.0
+#         return {'operation': reference,'selection': }
 
 
 class RewardObs(gym.Wrapper):

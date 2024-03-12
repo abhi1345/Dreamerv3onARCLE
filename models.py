@@ -1,6 +1,7 @@
 import copy
 import torch
 from torch import nn
+import numpy as np
 
 import networks
 import tools
@@ -111,7 +112,6 @@ class WorldModel(nn.Module):
         # reward (batch_size, batch_length)
         # discount (batch_size, batch_length)
         data = self.preprocess(data)
-
         with tools.RequiresGrad(self):
             with torch.cuda.amp.autocast(self._use_amp):
                 embed = self.encoder(data)
@@ -173,7 +173,7 @@ class WorldModel(nn.Module):
     # this function is called during both rollout and training
     def preprocess(self, obs):
         obs = obs.copy()
-        obs["image"] = torch.Tensor(obs["image"]) / 255.0
+        obs["grid"] = torch.Tensor(obs["grid"])
         if "discount" in obs:
             obs["discount"] *= self._config.discount
             # (batch_size, batch_length) -> (batch_size, batch_length, 1)
@@ -183,8 +183,22 @@ class WorldModel(nn.Module):
         # 'is_terminal' is necesarry to train cont_head
         assert "is_terminal" in obs
         obs["cont"] = torch.Tensor(1.0 - obs["is_terminal"]).unsqueeze(-1)
-        obs = {k: torch.Tensor(v).to(self._config.device) for k, v in obs.items()}
-        return obs
+        obs = obs.copy()
+        processed_obs = {}
+        for k, v in obs.items():
+            if isinstance(v, np.ndarray) and v.dtype == np.object_:
+                if k == 'action' or k == 'logprob':  # Replace 'your_special_key' with the actual key name
+                    # Assuming 'operation' and 'selection' need to be stacked separately
+                    operation_arrays = np.stack([elem['operation'] for elem in v.flatten()])
+                    selection_arrays = np.stack([elem['selection'] for elem in v.flatten()])
+                    processed_obs[f'{k}_operation'] = torch.tensor(operation_arrays).to(self._config.device)
+                    processed_obs[f'{k}_selection'] = torch.tensor(selection_arrays).to(self._config.device)
+                else:
+                    pass
+            else:
+                processed_obs[k] = torch.tensor(v).to(self._config.device)
+        #obs = {k: torch.Tensor(v).to(self._config.device) for k, v in obs.items()}
+        return processed_obs
 
     def video_pred(self, data):
         data = self.preprocess(data)
@@ -193,17 +207,17 @@ class WorldModel(nn.Module):
         states, _ = self.dynamics.observe(
             embed[:6, :5], data["action"][:6, :5], data["is_first"][:6, :5]
         )
-        recon = self.heads["decoder"](self.dynamics.get_feat(states))["image"].mode()[
+        recon = self.heads["decoder"](self.dynamics.get_feat(states))["grid"].mode()[
             :6
         ]
         reward_post = self.heads["reward"](self.dynamics.get_feat(states)).mode()[:6]
         init = {k: v[:, -1] for k, v in states.items()}
         prior = self.dynamics.imagine_with_action(data["action"][:6, 5:], init)
-        openl = self.heads["decoder"](self.dynamics.get_feat(prior))["image"].mode()
+        openl = self.heads["decoder"](self.dynamics.get_feat(prior))["grid"].mode()
         reward_prior = self.heads["reward"](self.dynamics.get_feat(prior)).mode()
         # observed image is given until 5 steps
         model = torch.cat([recon[:, :5], openl], 1)
-        truth = data["image"][:6]
+        truth = data["grid"][:6]
         model = model
         error = (model - truth + 1.0) / 2.0
 
@@ -222,7 +236,7 @@ class ImagBehavior(nn.Module):
             feat_size = config.dyn_stoch + config.dyn_deter
         self.actor = networks.MLP(
             feat_size,
-            (config.num_actions,),
+            config.num_actions,
             config.actor["layers"],
             config.units,
             config.act,

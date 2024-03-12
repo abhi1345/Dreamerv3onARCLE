@@ -44,8 +44,9 @@ class RSSM(nn.Module):
         self._num_actions = num_actions
         self._embed = embed
         self._device = device
-
+        
         inp_layers = []
+        num_actions = num_actions['operation'] + num_actions['selection']
         if self._discrete:
             inp_dim = self._stoch * self._discrete + num_actions
         else:
@@ -176,7 +177,7 @@ class RSSM(nn.Module):
         # initialize all prev_state
         if prev_state == None or torch.sum(is_first) == len(is_first):
             prev_state = self.initial(len(is_first))
-            prev_action = torch.zeros((len(is_first), self._num_actions)).to(
+            prev_action = torch.zeros((len(is_first), self._num_actions['operation'] + self._num_actions['selection'])).to(
                 self._device
             )
         # overwrite the prev_state only where is_first=True
@@ -194,6 +195,7 @@ class RSSM(nn.Module):
                 )
 
         prior = self.img_step(prev_state, prev_action)
+        embed = embed.view(1, -1) #13824-512
         x = torch.cat([prior["deter"], embed], -1)
         # (batch_size, prior_deter + embed) -> (batch_size, hidden)
         x = self._obs_out_layers(x)
@@ -214,7 +216,10 @@ class RSSM(nn.Module):
             # (batch, stoch, discrete_num) -> (batch, stoch * discrete_num)
             prev_stoch = prev_stoch.reshape(shape)
         # (batch, stoch * discrete_num) -> (batch, stoch * discrete_num + action)
-        x = torch.cat([prev_stoch, prev_action], -1)
+        if isinstance(prev_action, dict):
+            x = torch.cat([prev_stoch, prev_action['operation'], prev_action['selection']], -1)
+        else:
+            x = torch.cat([prev_stoch, prev_action], -1)
         # (batch, stoch * discrete_num + action, embed) -> (batch, hidden)
         x = self._img_in_layers(x)
         for _ in range(self._rec_depth):  # rec depth is not correctly implemented
@@ -314,7 +319,7 @@ class MultiEncoder(nn.Module):
             if k not in excluded and not k.startswith("log_")
         }
         self.cnn_shapes = {
-            k: v for k, v in shapes.items() if len(v) == 3 and re.match(cnn_keys, k)
+            k: v for k, v in shapes.items() if len(v) == 2 and re.match(cnn_keys, k)
         }
         self.mlp_shapes = {
             k: v
@@ -333,7 +338,8 @@ class MultiEncoder(nn.Module):
             )
             self.outdim += self._cnn.outdim
         if self.mlp_shapes:
-            input_size = sum([sum(v) for v in self.mlp_shapes.values()])
+            #input_size = sum([sum(v) for v in self.mlp_shapes.values()])
+            input_size = sum([v[0] * v[1] if len(v) == 2 else v[0] for v in self.mlp_shapes.values()])
             self._mlp = MLP(
                 input_size,
                 None,
@@ -350,9 +356,12 @@ class MultiEncoder(nn.Module):
         outputs = []
         if self.cnn_shapes:
             inputs = torch.cat([obs[k] for k in self.cnn_shapes], -1)
+            #inputs = inputs.permute(1,2,0)
             outputs.append(self._cnn(inputs))
         if self.mlp_shapes:
-            inputs = torch.cat([obs[k] for k in self.mlp_shapes], -1)
+            flattened_tensors = [obs[k].view(-1) for k in self.mlp_shapes]
+            inputs = torch.cat(flattened_tensors, dim=-1)
+#            inputs = torch.cat([obs[k] for k in self.mlp_shapes], -1)
             outputs.append(self._mlp(inputs))
         outputs = torch.cat(outputs, -1)
         return outputs
@@ -381,7 +390,7 @@ class MultiDecoder(nn.Module):
         excluded = ("is_first", "is_last", "is_terminal")
         shapes = {k: v for k, v in shapes.items() if k not in excluded}
         self.cnn_shapes = {
-            k: v for k, v in shapes.items() if len(v) == 3 and re.match(cnn_keys, k)
+            k: v for k, v in shapes.items() if len(v) == 2 and re.match(cnn_keys, k)
         }
         self.mlp_shapes = {
             k: v
@@ -457,6 +466,7 @@ class ConvEncoder(nn.Module):
         minres=4,
     ):
         super(ConvEncoder, self).__init__()
+        #input_shape = (64,64,3)
         act = getattr(torch.nn, act)
         h, w, input_ch = input_shape
         stages = int(np.log2(h) - np.log2(minres))
@@ -479,8 +489,10 @@ class ConvEncoder(nn.Module):
             in_dim = out_dim
             out_dim *= 2
             h, w = h // 2, w // 2
-
-        self.outdim = out_dim // 2 * h * w
+        
+        h = 8
+        w = 8
+        self.outdim = out_dim //  2* h * w
         self.layers = nn.Sequential(*layers)
         self.layers.apply(tools.weight_init)
 
@@ -489,7 +501,11 @@ class ConvEncoder(nn.Module):
         # (batch, time, h, w, ch) -> (batch * time, h, w, ch)
         x = obs.reshape((-1,) + tuple(obs.shape[-3:]))
         # (batch * time, h, w, ch) -> (batch * time, ch, h, w)
-        x = x.permute(0, 3, 1, 2)
+        #print(x.shape)
+        #x = x.permute(0, 3, 1, 2)
+#        x_squeezed = x.squeeze(0)
+        #print(x.shape)
+
         x = self.layers(x)
         # (batch * time, ...) -> (batch * time, -1)
         x = x.reshape([x.shape[0], np.prod(x.shape[1:])])
@@ -634,6 +650,11 @@ class MLP(nn.Module):
             self.layers.add_module(f"{name}_act{i}", act())
             if i == 0:
                 inp_dim = units
+
+        # if name == "Actor":
+        #     print("행복해요^^")
+        #     self.operation_head = 
+        #     self.selection_head = 
         self.layers.apply(tools.weight_init)
 
         if isinstance(self._shape, dict):
@@ -809,3 +830,57 @@ class ImgChLayerNorm(nn.Module):
         x = self.norm(x)
         x = x.permute(0, 3, 1, 2)
         return x
+
+# class ArcleActor(nn.Module):
+#     def __init__(
+#         self,   
+#         inp_dim,
+#         shape,
+#         layers,
+#         units,
+#         act="SiLU",
+#         norm=True,
+#         dist="normal",
+#         std=1.0,
+#         min_std=0.1,
+#         max_std=1.0,
+#         absmax=None,
+#         temp=0.1,
+#         unimix_ratio=0.01,
+#         outscale=1.0,
+#         symlog_inputs=False,
+#         device="cuda",
+#         name="NoName",
+#     ):
+#         super(ArcleActor, self).__init__()
+#         self.layers = MLP(        
+#             self,   
+#             inp_dim,
+#             shape,
+#             layers,
+#             units,
+#             act,
+#             norm,
+#             dist",
+#             std,
+#             min_std,
+#             max_std,
+#             absmax,
+#             temp,
+#             unimix_ratio,
+#             outscale,
+#             symlog_inputse,
+#             device,
+#             name",
+#             )
+        
+#         self.operation_head = MLP(config.units, config.num_actions[0])
+#         self.selection_head = MLP(config.units, config.num_actions[1])
+
+
+#     def forward(self, obs):
+#         x = self.layers(obs)
+#         operation = self.operation_head(x)
+#         selection = self.selection_head(x)
+
+#         return {"operation": operation, "selection": selection}

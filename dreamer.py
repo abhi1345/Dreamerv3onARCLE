@@ -3,6 +3,7 @@ import functools
 import os
 import pathlib
 import sys
+import gymnasium
 
 os.environ["MUJOCO_GL"] = "osmesa"
 
@@ -29,6 +30,7 @@ class Dreamer(nn.Module):
     def __init__(self, obs_space, act_space, config, logger, dataset):
         super(Dreamer, self).__init__()
         self._config = config
+        self.act_space = act_space
         self._logger = logger
         self._should_log = tools.Every(config.log_every)
         batch_steps = config.batch_size * config.batch_length
@@ -96,16 +98,16 @@ class Dreamer(nn.Module):
         feat = self._wm.dynamics.get_feat(latent)
         if not training:
             actor = self._task_behavior.actor(feat)
-            action = actor.mode()
+            action = {"operation": actor['operation'].mode(), "selection": actor['selection'].mode()}
         elif self._should_expl(self._step):
             actor = self._expl_behavior.actor(feat)
             action = actor.sample()
         else:
             actor = self._task_behavior.actor(feat)
             action = actor.sample()
-        logprob = actor.log_prob(action)
+        logprob = {"operation": actor['operation'].log_prob(action['operation']), "selection": actor['selection'].log_prob(action['selection'])}
         latent = {k: v.detach() for k, v in latent.items()}
-        action = action.detach()
+        #action = {"operation": actor['operation'].detach(), "selection": actor['selection'].detach()} #action.detach()
         if self._config.actor["dist"] == "onehot_gumble":
             action = torch.one_hot(
                 torch.argmax(action, dim=-1), self._config.num_actions
@@ -116,6 +118,7 @@ class Dreamer(nn.Module):
 
     def _train(self, data):
         metrics = {}
+        
         post, context, mets = self._wm._train(data)
         metrics.update(mets)
         start = post
@@ -193,6 +196,18 @@ def make_env(config, mode, id):
 
         env = minecraft.make_env(task, size=config.size, break_speed=config.break_speed)
         env = wrappers.OneHotAction(env)
+
+    elif suite == "arcle":
+        from arcle.envs.arcenv import RawARCEnv
+        from arcdreaemr import arcwrapper
+        
+        env = RawARCEnv()
+        # for attr, value in vars(env).items():
+        #     print(f"{attr} = {value}")
+        env = arcwrapper(env)
+        # obj의 속성을 딕셔너리 형태로 출력
+        # for attr, value in vars(env).items():
+        #     print(f"{attr} = {value}")
     else:
         raise NotImplementedError(suite)
     env = wrappers.TimeLimit(env, config.time_limit)
@@ -244,8 +259,8 @@ def main(config):
         train_envs = [Damy(env) for env in train_envs]
         eval_envs = [Damy(env) for env in eval_envs]
     acts = train_envs[0].action_space
-    print("Action Space", acts)
-    config.num_actions = acts.n if hasattr(acts, "n") else acts.shape[0]
+    #config.num_actions = acts['operation'].n if hasattr(acts['operation'], "n") else acts['operation'].shape[0]
+    config.num_actions = {"operation": 12, "selection": 900 }
 
     state = None
     if not config.offline_traindir:
@@ -255,6 +270,19 @@ def main(config):
             random_actor = tools.OneHotDist(
                 torch.zeros(config.num_actions).repeat(config.envs, 1)
             )
+        elif isinstance(acts, gymnasium.spaces.dict.Dict):
+            import torch
+            from torch.distributions import Bernoulli
+
+            # 성공 확률을 사용하여 베르누이 분포 생성
+            probs = 0.1
+            dist = Bernoulli(probs=probs)
+
+            random_actor = {'operation': tools.OneHotDist(
+                torch.zeros(config.num_actions['operation']).repeat(config.envs, 1)
+                ),
+                'selection': tools.Bernoulli(dist)
+            }
         else:
             random_actor = torchd.independent.Independent(
                 torchd.uniform.Uniform(
@@ -265,10 +293,13 @@ def main(config):
             )
 
         def random_agent(o, d, s):
-            action = random_actor.sample()
-            logprob = random_actor.log_prob(action)
-            return {"action": action, "logprob": logprob}, None
 
+            #action = random_actor.sample()
+            action = {'operation': random_actor['operation'].sample(), 'selection': random_actor['selection'].sample((30,30))}
+            #logprob = random_actor.log_prob(action)
+            logprob = {'operation': random_actor['operation'].log_prob(action['operation']),'selection': random_actor['selection'].log_prob(action['selection'])}
+            return {"action": action, "logprob": logprob}, None
+        
         state = tools.simulate(
             random_agent,
             train_envs,
@@ -297,11 +328,13 @@ def main(config):
         agent.load_state_dict(checkpoint["agent_state_dict"])
         tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
         agent._should_pretrain._once = False
+    
 
     # make sure eval will be executed once after config.steps
     while agent._step < config.steps + config.eval_every:
         logger.write()
         if config.eval_episode_num > 0:
+            #print(agent.act_space)
             print("Start evaluation.")
             eval_policy = functools.partial(agent, training=False)
             tools.simulate(
@@ -316,6 +349,7 @@ def main(config):
             if config.video_pred_log:
                 video_pred = agent._wm.video_pred(next(eval_dataset))
                 logger.video("eval_openl", to_np(video_pred))
+
         print("Start training.")
         state = tools.simulate(
             agent,
@@ -326,6 +360,7 @@ def main(config):
             limit=config.dataset_size,
             steps=config.eval_every,
             state=state,
+            level = "training",
         )
         items_to_save = {
             "agent_state_dict": agent.state_dict(),

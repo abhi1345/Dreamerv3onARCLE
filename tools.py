@@ -94,9 +94,10 @@ class Logger:
             name = name if isinstance(name, str) else name.decode("utf-8")
             if np.issubdtype(value.dtype, np.floating):
                 value = np.clip(255 * value, 0, 255).astype(np.uint8)
-            B, T, H, W, C = value.shape
-            value = value.transpose(1, 4, 2, 0, 3).reshape((1, T, C, H, B * W))
-            self._writer.add_video(name, value, step, 16)
+            
+            #B, T, H, W, C = value.shape
+            #value = value.transpose(1, 4, 2, 0, 3).reshape((1, T, C, H, B * W))
+            #self._writer.add_video(name, value, step, 16)
 
         self._writer.flush()
         self._scalars = {}
@@ -136,6 +137,7 @@ def simulate(
     steps=0,
     episodes=0,
     state=None,
+    level=None,
 ):
     # initialize or unpack simulation state
     if state is None:
@@ -153,6 +155,7 @@ def simulate(
             indices = [index for index, d in enumerate(done) if d]
             results = [envs[i].reset() for i in indices]
             results = [r() for r in results]
+            results = [results[0][0]]
             for index, result in zip(indices, results):
                 t = result.copy()
                 t = {k: convert(v) for k, v in t.items()}
@@ -164,16 +167,32 @@ def simulate(
                 # replace obs with done by initial state
                 obs[index] = result
         # step agents
+        #if level == 'training':
+            #print(obs, done, agent_state)
         obs = {k: np.stack([o[k] for o in obs]) for k in obs[0] if "log_" not in k}
         action, agent_state = agent(obs, done, agent_state)
+        #if not isinstance(action['action'], dict):
         if isinstance(action, dict):
-            action = [
-                {k: np.array(action[k][i].detach().cpu()) for k in action}
-                for i in range(len(envs))
-            ]
+            dic_action = {}
+            actions = []
+            for i in range(len(envs)):
+                for k in action:
+                    arc_action = {}
+                    for k2 in action[k]:
+                        arc_action[k2] = np.array(action[k][k2].detach().cpu())
+                    dic_action[k] = arc_action
+            actions.append(dic_action)
+            action = actions
+            #print(action)
+            # action = [
+            #     {k: np.array(action[k][i].detach().cpu()) for k in action}
+            #     for i in range(len(envs))
+            # ]
         else:
             action = np.array(action)
         assert len(action) == len(envs)
+        actions[0]['action']['operation'] = np.argmax(actions[0]['action']['operation'])
+
         # step envs
         results = [e.step(a) for e, a in zip(envs, action)]
         results = [r() for r in results]
@@ -205,7 +224,7 @@ def simulate(
                 save_episodes(directory, {envs[i].id: cache[envs[i].id]})
                 length = len(cache[envs[i].id]["reward"]) - 1
                 score = float(np.array(cache[envs[i].id]["reward"]).sum())
-                video = cache[envs[i].id]["image"]
+                video = cache[envs[i].id]["grid"]
                 # record logs given from environments
                 for key in list(cache[envs[i].id].keys()):
                     if "log_" in key:
@@ -258,10 +277,24 @@ def add_to_cache(cache, id, transition):
         for key, val in transition.items():
             if key not in cache[id]:
                 # fill missing data(action, etc.) at second time
-                cache[id][key] = [convert(0 * val)]
-                cache[id][key].append(convert(val))
+                if key == 'action' or key == 'logprob':
+                    for k, v in val.items():
+                        cache[id][key] = [{k: convert(0 * v) for k, v in val.items()}]
+                        cache[id][key].append({k: convert(v) for k, v in val.items()})
+                        #cache[id][key].append(convert(val))
+                else:
+                    cache[id][key] = [convert(0 * val)]
+                    cache[id][key].append(convert(val))
+
             else:
-                cache[id][key].append(convert(val))
+                if key == 'action' or key == 'logprob':
+                    for k, v in val.items():
+                        cache[id][key] = [{k: convert(0 * v) for k, v in val.items()}]
+                        cache[id][key].append({k: convert(v) for k, v in val.items()})
+                        #cache[id][key].append(convert(val))
+                else:
+                    cache[id][key] = [convert(0 * val)]
+                    cache[id][key].append(convert(val))
 
 
 def erase_over_episodes(cache, dataset_size):
@@ -422,33 +455,6 @@ class SampleDist:
         return -torch.mean(logprob, 0)
 
 
-class OneHotDist(torchd.one_hot_categorical.OneHotCategorical):
-    def __init__(self, logits=None, probs=None, unimix_ratio=0.0):
-        if logits is not None and unimix_ratio > 0.0:
-            probs = F.softmax(logits, dim=-1)
-            probs = probs * (1.0 - unimix_ratio) + unimix_ratio / probs.shape[-1]
-            logits = torch.log(probs)
-            super().__init__(logits=logits, probs=None)
-        else:
-            super().__init__(logits=logits, probs=probs)
-
-    def mode(self):
-        _mode = F.one_hot(
-            torch.argmax(super().logits, axis=-1), super().logits.shape[-1]
-        )
-        return _mode.detach() + super().logits - super().logits.detach()
-
-    def sample(self, sample_shape=(), seed=None):
-        if seed is not None:
-            raise ValueError("need to check")
-        sample = super().sample(sample_shape)
-        probs = super().probs
-        while len(probs.shape) < len(sample.shape):
-            probs = probs[None]
-        sample += probs - probs.detach()
-        return sample
-
-
 class DiscDist:
     def __init__(
         self,
@@ -607,15 +613,41 @@ class Bernoulli:
         return _mode.detach() + self._dist.mean - self._dist.mean.detach()
 
     def sample(self, sample_shape=()):
-        return self._dist.rsample(sample_shape)
+        return self._dist.sample(sample_shape)
 
     def log_prob(self, x):
-        _logits = self._dist.base_dist.logits
+        #_logits = self._dist.base_dist.logits
+        _logits = self._dist.logits
         log_probs0 = -F.softplus(_logits)
         log_probs1 = -F.softplus(-_logits)
 
         return torch.sum(log_probs0 * (1 - x) + log_probs1 * x, -1)
+    
+class OneHotDist(torchd.one_hot_categorical.OneHotCategorical):
+    def __init__(self, logits=None, probs=None, unimix_ratio=0.0):
+        if logits is not None and unimix_ratio > 0.0:
+            probs = F.softmax(logits, dim=-1)
+            probs = probs * (1.0 - unimix_ratio) + unimix_ratio / probs.shape[-1]
+            logits = torch.log(probs)
+            super().__init__(logits=logits, probs=None)
+        else:
+            super().__init__(logits=logits, probs=probs)
 
+    def mode(self):
+        _mode = F.one_hot(
+            torch.argmax(super().logits, axis=-1), super().logits.shape[-1]
+        )
+        return _mode.detach() + super().logits - super().logits.detach()
+
+    def sample(self, sample_shape=(), seed=None):
+        if seed is not None:
+            raise ValueError("need to check")
+        sample = super().sample(sample_shape)
+        probs = super().probs
+        while len(probs.shape) < len(sample.shape):
+            probs = probs[None]
+        sample += probs - probs.detach()
+        return sample
 
 class UnnormalizedHuber(torchd.normal.Normal):
     def __init__(self, loc, scale, threshold=1, **kwargs):
