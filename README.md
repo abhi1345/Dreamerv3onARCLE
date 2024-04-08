@@ -1,8 +1,7 @@
 # dreamerv3-torch
 Pytorch implementation of [Mastering Diverse Domains through World Models](https://arxiv.org/abs/2301.04104v1). DreamerV3 is a scalable algorithm that outperforms previous approaches across various domains with fixed hyperparameters.
 
-# dreamerv3 on ARCLE
-The runnalbe version of dreamerv3-torch
+dreamerv3 on ARCLE
 
 ## Instructions
 
