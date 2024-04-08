@@ -37,6 +37,7 @@ RUN pip3 install gym==0.19.0
 RUN pip3 install mujoco==2.3.5
 RUN pip3 install dm_control==1.0.9
 RUN pip3 install moviepy
+RUN pip install gymnasium
 
 # crafter setup
 RUN pip3 install crafter==1.8.0
@@ -54,7 +55,7 @@ RUN cd .. && rm -rf roms
 RUN pip3 install memory_maze==1.0.3
 
 # minecraft setup
-RUN pip3 install minerl==0.4.4
+#RUN pip3 install minerl==0.4.4
 RUN pip3 install numpy==1.21.0
-
 RUN pip3 install arcle
+RUN pip3 install wandb

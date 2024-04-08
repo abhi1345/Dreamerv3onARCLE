@@ -14,7 +14,7 @@ class RSSM(nn.Module):
     def __init__(
         self,
         stoch=30,
-        deter=200,
+        deter=200,  
         hidden=200,
         rec_depth=1,
         discrete=False,
@@ -51,6 +51,7 @@ class RSSM(nn.Module):
             inp_dim = self._stoch * self._discrete + num_actions
         else:
             inp_dim = self._stoch + num_actions
+
         inp_layers.append(nn.Linear(inp_dim, self._hidden, bias=False))
         if norm:
             inp_layers.append(nn.LayerNorm(self._hidden, eps=1e-03))
@@ -128,7 +129,9 @@ class RSSM(nn.Module):
     def observe(self, embed, action, is_first, state=None):
         swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
         # (batch, time, ch) -> (time, batch, ch)
-        embed, action, is_first = swap(embed), swap(action), swap(is_first)
+        #embed, action, is_first = swap(embed), swap(action), swap(is_first)
+        embed, is_first = swap(embed), swap(is_first)
+        action = [[action[j][i] for j in range(len(action))] for i in range(len(action[0]))]
         # prev_state[0] means selecting posterior of return(posterior, prior) from obs_step
         post, prior = tools.static_scan(
             lambda prev_state, prev_act, embed, is_first: self.obs_step(
@@ -147,7 +150,8 @@ class RSSM(nn.Module):
         swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
         assert isinstance(state, dict), state
         action = action
-        action = swap(action)
+        #action = swap(action)
+        action = [[action[j][i] for j in range(len(action))] for i in range(len(action[0]))]
         prior = tools.static_scan(self.img_step, [action], state)
         prior = prior[0]
         prior = {k: swap(v) for k, v in prior.items()}
@@ -193,9 +197,11 @@ class RSSM(nn.Module):
                 prev_state[key] = (
                     val * (1.0 - is_first_r) + init_state[key] * is_first_r
                 )
-
         prior = self.img_step(prev_state, prev_action)
-        embed = embed.view(1, -1) #13824-512
+        #embed = embed.view(1, -1) #13824-512
+        #embed = embed.reshape(1, -1) #13824-512
+        #print(embed, embed.shape)        
+        
         x = torch.cat([prior["deter"], embed], -1)
         # (batch_size, prior_deter + embed) -> (batch_size, hidden)
         x = self._obs_out_layers(x)
@@ -218,6 +224,16 @@ class RSSM(nn.Module):
         # (batch, stoch * discrete_num) -> (batch, stoch * discrete_num + action)
         if isinstance(prev_action, dict):
             x = torch.cat([prev_stoch, prev_action['operation'], prev_action['selection']], -1)
+        elif isinstance(prev_action[0], dict):
+            operations = [action['operation'] for action in prev_action]
+            selections = [action['selection'].reshape(30,30) for action in prev_action]
+
+            operations = torch.stack(operations)  # [batch_size, operation_dim]
+            operations = operations.view(len(operations), -1)
+            selections = torch.stack(selections)  # [batch_size, selection_dim]
+            selections = selections.view(len(selections), -1)
+
+            x = torch.cat([prev_stoch, operations, selections], -1)
         else:
             x = torch.cat([prev_stoch, prev_action], -1)
         # (batch, stoch * discrete_num + action, embed) -> (batch, hidden)
@@ -321,10 +337,12 @@ class MultiEncoder(nn.Module):
         self.cnn_shapes = {
             k: v for k, v in shapes.items() if len(v) == 2 and re.match(cnn_keys, k)
         }
+        self.num_shape = len(shapes)
+        self.shapes = shapes
         self.mlp_shapes = {
             k: v
             for k, v in shapes.items()
-            if len(v) in (1, 2) and re.match(mlp_keys, k)
+            if len(v) == 2 and re.match(mlp_keys, k)
         }
         print("Encoder CNN shapes:", self.cnn_shapes)
         print("Encoder MLP shapes:", self.mlp_shapes)
@@ -359,10 +377,15 @@ class MultiEncoder(nn.Module):
             #inputs = inputs.permute(1,2,0)
             outputs.append(self._cnn(inputs))
         if self.mlp_shapes:
-            flattened_tensors = [obs[k].view(-1) for k in self.mlp_shapes]
-            inputs = torch.cat(flattened_tensors, dim=-1)
-#            inputs = torch.cat([obs[k] for k in self.mlp_shapes], -1)
-            outputs.append(self._mlp(inputs))
+            #inputs = torch.cat([obs[k] for k in self.mlp_shapes], -1)
+            #inputs = [obs[k].view(obs[k].size(0), obs[k].size(1), obs[k].size(2), -1) for k in self.mlp_shapes]
+            if len(obs) == self.num_shape + 8:
+                print(len(obs['trials_remain']))
+                inputs = torch.cat([obs[k].view(obs[k].size(0), 64, -1) for k in self.mlp_shapes], -1)
+            else:
+                inputs = torch.cat([obs[k].view(obs[k].size(0), -1) for k in self.mlp_shapes], -1)
+            output = self._mlp(inputs)
+            outputs.append(output)
         outputs = torch.cat(outputs, -1)
         return outputs
 
@@ -395,7 +418,7 @@ class MultiDecoder(nn.Module):
         self.mlp_shapes = {
             k: v
             for k, v in shapes.items()
-            if len(v) in (1, 2) and re.match(mlp_keys, k)
+            if len(v) == 2 and re.match(mlp_keys, k)
         }
         print("Decoder CNN shapes:", self.cnn_shapes)
         print("Decoder MLP shapes:", self.mlp_shapes)
@@ -501,10 +524,8 @@ class ConvEncoder(nn.Module):
         # (batch, time, h, w, ch) -> (batch * time, h, w, ch)
         x = obs.reshape((-1,) + tuple(obs.shape[-3:]))
         # (batch * time, h, w, ch) -> (batch * time, ch, h, w)
-        #print(x.shape)
         #x = x.permute(0, 3, 1, 2)
 #        x_squeezed = x.squeeze(0)
-        #print(x.shape)
 
         x = self.layers(x)
         # (batch * time, ...) -> (batch * time, -1)
@@ -650,11 +671,6 @@ class MLP(nn.Module):
             self.layers.add_module(f"{name}_act{i}", act())
             if i == 0:
                 inp_dim = units
-
-        # if name == "Actor":
-        #     print("행복해요^^")
-        #     self.operation_head = 
-        #     self.selection_head = 
         self.layers.apply(tools.weight_init)
 
         if isinstance(self._shape, dict):
@@ -676,12 +692,12 @@ class MLP(nn.Module):
                 self.std_layer = nn.Linear(units, np.prod(self._shape))
                 self.std_layer.apply(tools.uniform_weight_init(outscale))
 
-    def forward(self, features, dtype=None):
+    def forward(self, features, dtype=None):    
         x = features
         if self._symlog_inputs:
-            x = tools.symlog(x)
+            x = tools.symlog(x)  
         out = self.layers(x)
-        # Used for encoder output
+        # Used for encoder output   
         if self._shape is None:
             return out
         if isinstance(self._shape, dict):
@@ -830,57 +846,3 @@ class ImgChLayerNorm(nn.Module):
         x = self.norm(x)
         x = x.permute(0, 3, 1, 2)
         return x
-
-# class ArcleActor(nn.Module):
-#     def __init__(
-#         self,   
-#         inp_dim,
-#         shape,
-#         layers,
-#         units,
-#         act="SiLU",
-#         norm=True,
-#         dist="normal",
-#         std=1.0,
-#         min_std=0.1,
-#         max_std=1.0,
-#         absmax=None,
-#         temp=0.1,
-#         unimix_ratio=0.01,
-#         outscale=1.0,
-#         symlog_inputs=False,
-#         device="cuda",
-#         name="NoName",
-#     ):
-#         super(ArcleActor, self).__init__()
-#         self.layers = MLP(        
-#             self,   
-#             inp_dim,
-#             shape,
-#             layers,
-#             units,
-#             act,
-#             norm,
-#             dist",
-#             std,
-#             min_std,
-#             max_std,
-#             absmax,
-#             temp,
-#             unimix_ratio,
-#             outscale,
-#             symlog_inputse,
-#             device,
-#             name",
-#             )
-        
-#         self.operation_head = MLP(config.units, config.num_actions[0])
-#         self.selection_head = MLP(config.units, config.num_actions[1])
-
-
-#     def forward(self, obs):
-#         x = self.layers(obs)
-#         operation = self.operation_head(x)
-#         selection = self.selection_head(x)
-
-#         return {"operation": operation, "selection": selection}

@@ -15,8 +15,6 @@ class arcwrapper(gym.ObservationWrapper):
                 "is_terminal": gym.spaces.Box(0, 1, (1,), dtype=np.uint8),
         }
         )
-        #self.observation_space['grid'] = gym.spaces.Box(0, 10, (30,30,1), dtype = np.uint8)
-
 
     def step(self, action):
         obs, reward, done, truncated, info = self.env.step(action)

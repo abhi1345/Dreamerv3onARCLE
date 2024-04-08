@@ -21,6 +21,7 @@ from parallel import Parallel, Damy
 import torch
 from torch import nn
 from torch import distributions as torchd
+import wandb
 
 
 to_np = lambda x: x.detach().cpu().numpy()
@@ -39,7 +40,7 @@ class Dreamer(nn.Module):
         self._should_reset = tools.Every(config.reset_every)
         self._should_expl = tools.Until(int(config.expl_until / config.action_repeat))
         self._metrics = {}
-        # this is update step
+        # this is update step       s
         self._step = logger.step // config.action_repeat
         self._update_count = 0
         self._dataset = dataset
@@ -101,24 +102,23 @@ class Dreamer(nn.Module):
             action = {"operation": actor['operation'].mode(), "selection": actor['selection'].mode()}
         elif self._should_expl(self._step):
             actor = self._expl_behavior.actor(feat)
-            action = actor.sample()
+            action = {"operation": actor['operation'].sample(), "selection": actor['selection'].sample()}
         else:
             actor = self._task_behavior.actor(feat)
             action = actor.sample()
         logprob = {"operation": actor['operation'].log_prob(action['operation']), "selection": actor['selection'].log_prob(action['selection'])}
         latent = {k: v.detach() for k, v in latent.items()}
-        #action = {"operation": actor['operation'].detach(), "selection": actor['selection'].detach()} #action.detach()
         if self._config.actor["dist"] == "onehot_gumble":
             action = torch.one_hot(
                 torch.argmax(action, dim=-1), self._config.num_actions
             )
         policy_output = {"action": action, "logprob": logprob}
         state = (latent, action)
+        #print("policy_output", policy_output)
         return policy_output, state
 
     def _train(self, data):
         metrics = {}
-        
         post, context, mets = self._wm._train(data)
         metrics.update(mets)
         start = post
@@ -130,8 +130,9 @@ class Dreamer(nn.Module):
             mets = self._expl_behavior.train(start, context, data)[-1]
             metrics.update({"expl_" + key: value for key, value in mets.items()})
         for name, value in metrics.items():
+            #wandb.log({name: value})
             if not name in self._metrics.keys():
-                self._metrics[name] = [value]
+                self._metrics[name] = [value]   
             else:
                 self._metrics[name].append(value)
 
@@ -200,14 +201,9 @@ def make_env(config, mode, id):
     elif suite == "arcle":
         from arcle.envs.arcenv import RawARCEnv
         from arcdreaemr import arcwrapper
-        
         env = RawARCEnv()
-        # for attr, value in vars(env).items():
-        #     print(f"{attr} = {value}")
         env = arcwrapper(env)
-        # obj의 속성을 딕셔너리 형태로 출력
-        # for attr, value in vars(env).items():
-        #     print(f"{attr} = {value}")
+
     else:
         raise NotImplementedError(suite)
     env = wrappers.TimeLimit(env, config.time_limit)
@@ -219,6 +215,7 @@ def make_env(config, mode, id):
 
 
 def main(config):
+    #wandb.init(project="arcledreamer", config=config)
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()
@@ -259,8 +256,7 @@ def main(config):
         train_envs = [Damy(env) for env in train_envs]
         eval_envs = [Damy(env) for env in eval_envs]
     acts = train_envs[0].action_space
-    #config.num_actions = acts['operation'].n if hasattr(acts['operation'], "n") else acts['operation'].shape[0]
-    config.num_actions = {"operation": 12, "selection": 900 }
+    config.num_actions = {"operation": 1, "selection": 900 }
 
     state = None
     if not config.offline_traindir:
@@ -273,8 +269,6 @@ def main(config):
         elif isinstance(acts, gymnasium.spaces.dict.Dict):
             import torch
             from torch.distributions import Bernoulli
-
-            # 성공 확률을 사용하여 베르누이 분포 생성
             probs = 0.1
             dist = Bernoulli(probs=probs)
 
@@ -293,10 +287,7 @@ def main(config):
             )
 
         def random_agent(o, d, s):
-
-            #action = random_actor.sample()
             action = {'operation': random_actor['operation'].sample(), 'selection': random_actor['selection'].sample((30,30))}
-            #logprob = random_actor.log_prob(action)
             logprob = {'operation': random_actor['operation'].log_prob(action['operation']),'selection': random_actor['selection'].log_prob(action['selection'])}
             return {"action": action, "logprob": logprob}, None
         

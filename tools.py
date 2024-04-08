@@ -36,7 +36,7 @@ class RequiresGrad:
         self._model.requires_grad_(requires_grad=True)
 
     def __exit__(self, *args):
-        self._model.requires_grad_(requires_grad=False)
+        self._model .requires_grad_(requires_grad=False)
 
 
 class TimeRecording:
@@ -167,8 +167,6 @@ def simulate(
                 # replace obs with done by initial state
                 obs[index] = result
         # step agents
-        #if level == 'training':
-            #print(obs, done, agent_state)
         obs = {k: np.stack([o[k] for o in obs]) for k in obs[0] if "log_" not in k}
         action, agent_state = agent(obs, done, agent_state)
         #if not isinstance(action['action'], dict):
@@ -183,15 +181,11 @@ def simulate(
                     dic_action[k] = arc_action
             actions.append(dic_action)
             action = actions
-            #print(action)
-            # action = [
-            #     {k: np.array(action[k][i].detach().cpu()) for k in action}
-            #     for i in range(len(envs))
-            # ]
         else:
             action = np.array(action)
         assert len(action) == len(envs)
-        actions[0]['action']['operation'] = np.argmax(actions[0]['action']['operation'])
+        for i in range(len(envs)):
+            actions[i]['action']['operation'] = np.argmax(actions[0]['action']['operation'])
 
         # step envs
         results = [e.step(a) for e, a in zip(envs, action)]
@@ -402,7 +396,7 @@ def load_episodes(directory, limit=None, reverse=True):
         for filename in reversed(sorted(directory.glob("*.npz"))):
             try:
                 with filename.open("rb") as f:
-                    episode = np.load(f)
+                    episode = np.load(f, allow_pickle = True)
                     episode = {k: episode[k] for k in episode.keys()}
             except Exception as e:
                 print(f"Could not load episode: {e}")
@@ -416,7 +410,7 @@ def load_episodes(directory, limit=None, reverse=True):
         for filename in sorted(directory.glob("*.npz")):
             try:
                 with filename.open("rb") as f:
-                    episode = np.load(f)
+                    episode = np.load(f, allow_pickle = True)
                     episode = {k: episode[k] for k in episode.keys()}
             except Exception as e:
                 print(f"Could not load episode: {e}")
@@ -549,6 +543,7 @@ class SymlogDist:
         return symexp(self._mode)
 
     def log_prob(self, value):
+        self._mode = self._mode.reshape(16,64,30,30)
         assert self._mode.shape == value.shape
         if self._dist == "mse":
             distance = (self._mode - symlog(value)) ** 2.0
@@ -616,12 +611,7 @@ class Bernoulli:
         return self._dist.sample(sample_shape)
 
     def log_prob(self, x):
-        #_logits = self._dist.base_dist.logits
-        _logits = self._dist.logits
-        log_probs0 = -F.softplus(_logits)
-        log_probs1 = -F.softplus(-_logits)
-
-        return torch.sum(log_probs0 * (1 - x) + log_probs1 * x, -1)
+        return self._dist.log_prob(x)
     
 class OneHotDist(torchd.one_hot_categorical.OneHotCategorical):
     def __init__(self, logits=None, probs=None, unimix_ratio=0.0):
@@ -827,7 +817,10 @@ def args_type(default):
 
 def static_scan(fn, inputs, start):
     last = start
-    indices = range(inputs[0].shape[0])
+    try:
+        indices = range(inputs[0].shape[0])
+    except:
+        indices = range(np.array(inputs[0]).shape[0])
     flag = True
     for index in indices:
         inp = lambda x: (_input[x] for _input in inputs)
@@ -969,12 +962,21 @@ def uniform_weight_init(given_scale):
 
 
 def tensorstats(tensor, prefix=None):
-    metrics = {
-        "mean": to_np(torch.mean(tensor)),
-        "std": to_np(torch.std(tensor)),
-        "min": to_np(torch.min(tensor)),
-        "max": to_np(torch.max(tensor)),
-    }
+    if isinstance(tensor, dict):
+        metrics = {
+            "mean": to_np(torch.mean(tensor['operation'])) + to_np(torch.mean(tensor['selection'])),
+            "std": to_np(torch.std(tensor['operation'])) + to_np(torch.std(tensor['selection'])),
+            "min": to_np(torch.min(tensor['operation'])) + to_np(torch.min(tensor['selection'])),
+            "max": to_np(torch.max(tensor['operation'])) + to_np(torch.max(tensor['selection'])),
+        }
+    else:
+        metrics = {
+            "mean": to_np(torch.mean(tensor)),
+            "std": to_np(torch.std(tensor)),
+            "min": to_np(torch.min(tensor)),
+            "max": to_np(torch.max(tensor)),
+        }
+
     if prefix:
         metrics = {f"{prefix}_{k}": v for k, v in metrics.items()}
     return metrics
