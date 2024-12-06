@@ -119,7 +119,7 @@ class Plan2Explore(nn.Module):
         return reward
 
     def _train_ensemble(self, inputs, targets):
-        with torch.cpu.amp.autocast(self._use_amp):
+        with torch.amp.autocast('cpu', self._use_amp):
             if self._config.disag_offset:
                 targets = targets[:, self._config.disag_offset :]
                 inputs = inputs[:, : -self._config.disag_offset]
