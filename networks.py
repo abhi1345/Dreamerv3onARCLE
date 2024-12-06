@@ -380,7 +380,7 @@ class MultiEncoder(nn.Module):
             #inputs = torch.cat([obs[k] for k in self.mlp_shapes], -1)
             #inputs = [obs[k].view(obs[k].size(0), obs[k].size(1), obs[k].size(2), -1) for k in self.mlp_shapes]
             if len(obs) == self.num_shape + 8:
-                print(len(obs['trials_remain']))
+                # print(len(obs['trials_remain']))
                 inputs = torch.cat([obs[k].view(obs[k].size(0), 64, -1) for k in self.mlp_shapes], -1)
             else:
                 inputs = torch.cat([obs[k].view(obs[k].size(0), -1) for k in self.mlp_shapes], -1)
