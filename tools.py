@@ -44,14 +44,11 @@ class TimeRecording:
         self._comment = comment
 
     def __enter__(self):
-        self._st = torch.cuda.Event(enable_timing=True)
-        self._nd = torch.cuda.Event(enable_timing=True)
-        self._st.record()
+        self._start_time = time.time()
 
     def __exit__(self, *args):
-        self._nd.record()
-        torch.cuda.synchronize()
-        print(self._comment, self._st.elapsed_time(self._nd) / 1000)
+        elapsed_time = time.time() - self._start_time
+        print(self._comment, elapsed_time)
 
 
 class Logger:
@@ -457,7 +454,7 @@ class DiscDist:
         high=20.0,
         transfwd=symlog,
         transbwd=symexp,
-        device="cuda",
+        device="cpu",
     ):
         self.logits = logits
         self.probs = torch.softmax(logits, -1)
@@ -767,7 +764,7 @@ class Optimizer:
             "sgd": lambda: torch.optim.SGD(parameters, lr=lr),
             "momentum": lambda: torch.optim.SGD(parameters, lr=lr, momentum=0.9),
         }[opt]()
-        self._scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+        self._scaler = torch.cpu.amp.GradScaler(enabled=use_amp)
 
     def __call__(self, loss, params, retain_graph=True):
         assert len(loss.shape) == 0, loss.shape
@@ -984,8 +981,6 @@ def tensorstats(tensor, prefix=None):
 
 def set_seed_everywhere(seed):
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     random.seed(seed)
 
