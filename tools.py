@@ -192,8 +192,12 @@ def simulate(
         reward = list(reward)
         done = np.stack(done)
         episode += int(done.sum())
+        if (episodes):
+            print(f"Completed simulation episode {episode}/{episodes}")
         length += 1
         step += len(envs)
+        if steps:
+            print(f"Completed simulation step {step}/{steps}")
         length *= 1 - done
         # add to cache
         for a, result, env in zip(action, results, envs):
